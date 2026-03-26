@@ -8,7 +8,7 @@
 include('../../../inc/includes.php');
 
 Session::checkLoginUser();
-if (!Session::haveRight('form', UPDATE)) {
+if (!Session::haveRight('config', UPDATE)) {
     Html::displayRightError();
     exit;
 }
@@ -100,14 +100,15 @@ Html::header('Form Batch Manager — Reparar', $selfUrl, 'admin', 'PluginFormbat
     <!-- Informações técnicas -->
     <div class="card border-0 bg-light">
         <div class="card-body small text-muted">
-            <strong>O que esta ferramenta faz:</strong>
-            Localiza questões onde o campo <code>extra_data</code> foi armazenado como a string
-            <code>"Array"</code> (em vez de JSON <code>{}</code>) e corrige o valor para
-            <code>{}</code> diretamente no banco. O GLPI passa a conseguir renderizar o editor
-            do formulário normalmente.
-            <br><br>
-            <strong>Causa:</strong> Versões anteriores do Form Batch Manager passavam um array PHP
-            vazio para campos não-dropdown, que era serializado incorretamente pelo DB layer do GLPI.
+            <strong>O que esta ferramenta faz:</strong> Detecta e corrige dois tipos de problema:
+            <ul class="mb-1 mt-1">
+                <li><code>extra_data = 'Array'</code> — campo serializado incorretamente; corrigido para <code>{}</code>.</li>
+                <li>Formato legado de opções <code>{"uuid":{"uuid":"...","value":"texto","checked":0}}</code>
+                    — convertido para o formato atual <code>{"uuid":"texto"}</code> exigido pelo GLPI 11.</li>
+            </ul>
+            <strong>Causa do formato legado:</strong> O editor nativo do GLPI salvava opções como objetos.
+            Uma atualização do GLPI 11 mudou o formato esperado, causando erro
+            <em>"Argument #4 ($value) must be of type ?string, array given"</em> ao abrir formulários.
         </div>
     </div>
 

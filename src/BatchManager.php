@@ -342,7 +342,8 @@ class BatchManager
     // ── Reparação de formulários com extra_data corrompido ───────────────
 
     /**
-     * Retorna formulários que possuem questões com extra_data corrompido ('Array').
+     * Retorna formulários com questões corrompidas (extra_data='Array')
+     * ou com opções no formato legado {uuid: {uuid, value, checked}}.
      *
      * @return array{id:int, name:string, bad_count:int}[]
      */
@@ -354,33 +355,57 @@ class BatchManager
         $sectionTable  = Section::getTable();
         $formTable     = Form::getTable();
 
+        // Busca todas as questões com extra_data não-vazio para avaliar
         $res = $DB->doQuery(
-            "SELECT f.id, f.name, COUNT(q.id) AS bad_count
+            "SELECT f.id, f.name, q.id AS qid, q.extra_data
              FROM `$formTable` f
              JOIN `$sectionTable` s ON s.forms_forms_id = f.id
              JOIN `$questionTable` q ON q.forms_sections_id = s.id
-             WHERE q.extra_data = 'Array'
-               AND f.is_deleted = 0
-             GROUP BY f.id, f.name
-             ORDER BY f.name ASC"
+             WHERE (q.extra_data = 'Array' OR q.extra_data LIKE '%\"uuid\"%' OR q.extra_data LIKE '%\"checked\"%')
+               AND f.is_deleted = 0"
         );
 
-        $forms = [];
+        $counts = [];
+        $names  = [];
         if ($res) {
             while ($row = $res->fetch_assoc()) {
-                $forms[] = [
-                    'id'        => (int) $row['id'],
-                    'name'      => $row['name'],
-                    'bad_count' => (int) $row['bad_count'],
-                ];
+                $fid = (int) $row['id'];
+                if ($this->isCorrupted($row['extra_data'])) {
+                    $counts[$fid] = ($counts[$fid] ?? 0) + 1;
+                    $names[$fid]  = $row['name'];
+                }
             }
         }
+
+        $forms = [];
+        foreach ($counts as $fid => $cnt) {
+            $forms[] = ['id' => $fid, 'name' => $names[$fid], 'bad_count' => $cnt];
+        }
+        usort($forms, fn($a, $b) => strcmp($a['name'], $b['name']));
 
         return $forms;
     }
 
     /**
-     * Repara questões com extra_data = 'Array' nos formulários informados.
+     * Verifica se extra_data está corrompido: string 'Array' ou formato legado de opções.
+     */
+    private function isCorrupted(string $raw): bool
+    {
+        if ($raw === 'Array') {
+            return true;
+        }
+        $data = json_decode($raw, true);
+        if (!is_array($data) || empty($data['options'])) {
+            return false;
+        }
+        // Formato legado: valores são arrays {uuid, value, checked}
+        $first = reset($data['options']);
+        return is_array($first) && isset($first['value']);
+    }
+
+    /**
+     * Repara questões corrompidas nos formulários informados.
+     * Corrige: extra_data='Array' e formato legado {uuid: {uuid,value,checked}}.
      *
      * @param int[] $formIds  IDs dos formulários a reparar (vazio = todos)
      * @return array{fixed:int, forms:int|string}
@@ -399,13 +424,13 @@ class BatchManager
             $formFilter = "AND f.id IN ($ids)";
         }
 
-        // Coleta IDs das questões corrompidas
+        // Busca questões candidatas
         $res = $DB->doQuery(
-            "SELECT q.id
+            "SELECT q.id, q.extra_data
              FROM `$questionTable` q
              JOIN `$sectionTable` s ON s.id = q.forms_sections_id
              JOIN `$formTable` f    ON f.id = s.forms_forms_id
-             WHERE q.extra_data = 'Array'
+             WHERE (q.extra_data = 'Array' OR q.extra_data LIKE '%\"uuid\"%' OR q.extra_data LIKE '%\"checked\"%')
                AND f.is_deleted = 0
                $formFilter"
         );
@@ -414,20 +439,44 @@ class BatchManager
             return ['fixed' => 0, 'forms' => count($formIds)];
         }
 
-        $ids = [];
+        $fixed = 0;
         while ($row = $res->fetch_assoc()) {
-            $ids[] = (int) $row['id'];
+            $raw = $row['extra_data'];
+
+            if ($raw === 'Array') {
+                // Corrompido como string — reseta para vazio
+                $DB->doQuery(
+                    "UPDATE `$questionTable` SET `extra_data` = '{}' WHERE `id` = " . (int) $row['id']
+                );
+                $fixed++;
+                continue;
+            }
+
+            $data = json_decode($raw, true);
+            if (!is_array($data) || empty($data['options'])) {
+                continue;
+            }
+
+            $first = reset($data['options']);
+            if (!is_array($first) || !isset($first['value'])) {
+                continue;
+            }
+
+            // Converte formato legado {uuid: {uuid,value,checked}} → {uuid: text}
+            $newOptions = [];
+            foreach ($data['options'] as $uuid => $obj) {
+                $newOptions[$uuid] = (string) ($obj['value'] ?? '');
+            }
+            $data['options'] = $newOptions;
+
+            $escaped = $DB->escape(json_encode($data));
+            $DB->doQuery(
+                "UPDATE `$questionTable` SET `extra_data` = '$escaped' WHERE `id` = " . (int) $row['id']
+            );
+            $fixed++;
         }
 
-        // Corrige diretamente — contorna prepareInputForUpdate que poderia re-serializar
-        $placeholders = implode(',', $ids);
-        $DB->doQuery(
-            "UPDATE `$questionTable`
-             SET `extra_data` = '{}'
-             WHERE `id` IN ($placeholders)"
-        );
-
-        return ['fixed' => count($ids), 'forms' => count($formIds) ?: 'todos'];
+        return ['fixed' => $fixed, 'forms' => count($formIds) ?: 'todos'];
     }
 
     // ── Edição em lote de questões ──────────────────────────────────────

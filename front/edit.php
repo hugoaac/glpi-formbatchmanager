@@ -8,7 +8,7 @@
 include('../../../inc/includes.php');
 
 Session::checkLoginUser();
-if (!Session::haveRight('form', UPDATE)) {
+if (!Session::haveRight('config', UPDATE)) {
     Html::displayRightError();
     exit;
 }

@@ -12,7 +12,7 @@ ob_clean();
 
 header('Content-Type: application/json');
 
-if (!Session::haveRight('form', UPDATE)) {
+if (!Session::haveRight('config', UPDATE)) {
     http_response_code(403);
     echo json_encode(['error' => 'Forbidden']);
     exit;

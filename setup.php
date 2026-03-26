@@ -43,7 +43,7 @@ function plugin_init_formbatchmanager(): void
         return;
     }
 
-    if (Session::haveRight('form', READ)) {
+    if (Session::haveRight('config', UPDATE)) {
         $PLUGIN_HOOKS['menu_toadd']['formbatchmanager'] = [
             'admin' => 'PluginFormbatchmanagerMenu',
         ];

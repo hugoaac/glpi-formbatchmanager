@@ -13,7 +13,7 @@
 include('../../../inc/includes.php');
 
 Session::checkLoginUser();
-if (!Session::haveRight('form', READ)) {
+if (!Session::haveRight('config', UPDATE)) {
     Html::displayRightError();
     exit;
 }
@@ -390,10 +390,27 @@ $regexSupportedTypes = json_encode(BatchManager::REGEX_SUPPORTED_TYPES);
                     <div class="fbm-options-list d-flex flex-column gap-1 mb-1">
                         <!-- linhas geradas pelo JS -->
                     </div>
-                    <button type="button" class="btn btn-sm btn-outline-secondary fbm-add-option">
-                        <i class="ti ti-plus me-1"></i>Adicionar opcao
-                    </button>
-                    <div class="form-text">Digite cada opcao separadamente.</div>
+                    <div class="d-flex gap-2 mb-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary fbm-add-option">
+                            <i class="ti ti-plus me-1"></i>Adicionar opcao
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-primary fbm-toggle-paste">
+                            <i class="ti ti-clipboard-text me-1"></i>Colar do Excel
+                        </button>
+                    </div>
+                    <div class="fbm-paste-area" style="display:none">
+                        <textarea class="form-control form-control-sm fbm-paste-input" rows="5"
+                            placeholder="Cole aqui as opcoes do Excel (uma por linha)&#10;Exemplo:&#10;Opcao A&#10;Opcao B&#10;Opcao C"></textarea>
+                        <div class="d-flex gap-2 mt-1">
+                            <button type="button" class="btn btn-sm btn-primary fbm-import-paste">
+                                <i class="ti ti-check me-1"></i>Importar
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary fbm-cancel-paste">
+                                Cancelar
+                            </button>
+                        </div>
+                        <div class="form-text">Cole uma coluna do Excel — cada linha vira uma opcao.</div>
+                    </div>
                 </div>
 
                 <!-- Múltiplos atores (visível para requester/observer/assignee) -->
@@ -573,6 +590,22 @@ function fbmAddRow() {
         fbmAddOptionRow(newRow);
     });
 
+    // Listeners da área de colagem do Excel
+    newRow.querySelector('.fbm-toggle-paste').addEventListener('click', function() {
+        var area = newRow.querySelector('.fbm-paste-area');
+        area.style.display = area.style.display === 'none' ? '' : 'none';
+        if (area.style.display !== 'none') {
+            newRow.querySelector('.fbm-paste-input').focus();
+        }
+    });
+    newRow.querySelector('.fbm-import-paste').addEventListener('click', function() {
+        fbmImportPastedOptions(newRow);
+    });
+    newRow.querySelector('.fbm-cancel-paste').addEventListener('click', function() {
+        newRow.querySelector('.fbm-paste-area').style.display = 'none';
+        newRow.querySelector('.fbm-paste-input').value = '';
+    });
+
     // Adiciona 2 opções iniciais quando a linha é criada
     // (serão exibidas só quando o tipo for selecionável)
     fbmAddOptionRow(newRow);
@@ -632,6 +665,29 @@ function fbmOnTypeChange(select) {
 
 // ── Opções customizadas (checkbox / dropdown) ─────────────────────────
 
+function fbmImportPastedOptions(row) {
+    var textarea = row.querySelector('.fbm-paste-input');
+    var lines    = textarea.value.split(/\r?\n/);
+    var added    = 0;
+    lines.forEach(function(line) {
+        var val = line.trim();
+        if (!val) return;
+        var optRow = fbmAddOptionRow(row);
+        optRow.querySelector('input[type="text"]').value = val;
+        added++;
+    });
+    textarea.value = '';
+    row.querySelector('.fbm-paste-area').style.display = 'none';
+    if (added > 0) {
+        // Remove as 2 linhas vazias iniciais se ainda estiverem em branco
+        row.querySelectorAll('.fbm-option-row input[type="text"]').forEach(function(inp) {
+            if (!inp.value.trim()) {
+                inp.closest('.fbm-option-row').remove();
+            }
+        });
+    }
+}
+
 function fbmAddOptionRow(row) {
     var list = row.querySelector('.fbm-options-list');
     // Descobrir o índice da questão pelo name do input de nome
@@ -648,6 +704,7 @@ function fbmAddOptionRow(row) {
         + 'onclick="this.closest(\'.fbm-option-row\').remove()" title="Remover">'
         + '<i class="ti ti-x"></i></button>';
     list.appendChild(div);
+    return div;
 }
 
 // ── Teste de regex ───────────────────────────────────────────────────
