@@ -69,21 +69,24 @@ class BatchManager
      *   - regex        (string)   Expressão regular (opcional)
      *   - regex_op     (string)   'match_regex' | 'not_match_regex'
      * @param int[]  $formIds
-     * @param string $position  'first' | 'last'
+     * @param string $position   'first' | 'last' | 'after'
+     * @param bool   $force      true = insere mesmo se já existir campo com mesmo nome
+     * @param string $afterName  Nome da questão ou seção de referência (quando position='after')
      *
      * @return array{added:int, skipped:int, errors:string[]}
      */
     public function addQuestionToForms(
         array  $questionsData,
         array  $formIds,
-        string $position = 'last',
-        bool   $force    = false   // true = insere mesmo se já existir campo com mesmo nome
+        string $position  = 'last',
+        bool   $force     = false,
+        string $afterName = ''
     ): array {
         $result = ['added' => 0, 'skipped' => 0, 'errors' => []];
 
         foreach ($formIds as $formId) {
             try {
-                $this->processForm((int) $formId, $questionsData, $position, $force, $result);
+                $this->processForm((int) $formId, $questionsData, $position, $force, $result, $afterName);
             } catch (\Throwable $e) {
                 $result['errors'][] = sprintf('Formulario #%d: %s', $formId, $e->getMessage());
             }
@@ -161,7 +164,8 @@ class BatchManager
         array  $questionsData,
         string $position,
         bool   $force,
-        array  &$result
+        array  &$result,
+        string $afterName = ''
     ): void {
         global $DB;
 
@@ -171,7 +175,22 @@ class BatchManager
             return;
         }
 
-        $section = $this->resolveFirstSection($form);
+        // ── Resolver seção alvo e rank de referência ──────────────────────
+        $afterRank         = null;
+        $effectivePosition = $position;
+
+        if ($position === 'after' && $afterName !== '') {
+            [$section, $afterRank] = $this->resolveAfterTarget($form, $afterName);
+            if ($section === null) {
+                // Referência não encontrada — recai para fim da primeira seção
+                $section           = $this->resolveFirstSection($form);
+                $afterRank         = null;
+                $effectivePosition = 'last';
+            }
+        } else {
+            $section = $this->resolveFirstSection($form);
+        }
+
         if ($section === null) {
             $result['errors'][] = "Formulario #{$formId}: nao foi possivel obter/criar secao.";
             return;
@@ -202,7 +221,7 @@ class BatchManager
         }
 
         // Calcular o bloco de ranks onde as novas questões serão inseridas
-        if ($position === 'first') {
+        if ($effectivePosition === 'first') {
             // Empurra TODAS as questões existentes para cima (shift +count)
             $shift = count($toInsert);
             $DB->doQueryOrDie(
@@ -211,9 +230,18 @@ class BatchManager
                   WHERE `forms_sections_id` = $sectionId"
             );
             $startRank = 0;
+        } elseif ($effectivePosition === 'after' && $afterRank !== null) {
+            // Empurra apenas as questões ABAIXO do rank de referência
+            $shift = count($toInsert);
+            $DB->doQueryOrDie(
+                "UPDATE `" . Question::getTable() . "`
+                    SET `vertical_rank` = `vertical_rank` + $shift
+                  WHERE `forms_sections_id` = $sectionId
+                    AND `vertical_rank` > " . (int) $afterRank
+            );
+            $startRank = (int) $afterRank + 1;
         } else {
             // last: append após a última questão existente
-            // ORDER BY + LIMIT 1 DESC é mais portável que MAX() com chave incerta
             $rankRow   = $DB->request([
                 'SELECT' => ['vertical_rank'],
                 'FROM'   => Question::getTable(),
@@ -662,6 +690,77 @@ class BatchManager
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
+
+    /**
+     * Localiza a seção e o rank de referência para inserção "after".
+     *
+     * Ordem de busca:
+     *  1. Questão com esse nome (exato) em qualquer seção do formulário
+     *     → retorna [seção da questão, vertical_rank da questão]
+     *  2. Seção com esse nome (exato)
+     *     → retorna [seção encontrada, max vertical_rank da seção]
+     *  3. Não encontrado → retorna [null, -1]
+     *
+     * @return array{0: ?Section, 1: int}
+     */
+    private function resolveAfterTarget(Form $form, string $afterName): array
+    {
+        global $DB;
+
+        $sectionTable  = Section::getTable();
+        $questionTable = Question::getTable();
+        $formId        = (int) $form->getID();
+        $escaped       = $DB->escape($afterName);
+
+        // 1. Busca questão pelo nome
+        $res = $DB->doQuery(
+            "SELECT q.forms_sections_id, q.vertical_rank
+             FROM `$questionTable` q
+             JOIN `$sectionTable` s ON s.id = q.forms_sections_id
+             WHERE s.forms_forms_id = $formId
+               AND q.name = '$escaped'
+             ORDER BY s.rank ASC, q.vertical_rank ASC
+             LIMIT 1"
+        );
+
+        if ($res && $res->num_rows > 0) {
+            $row     = $res->fetch_assoc();
+            $section = new Section();
+            if ($section->getFromDB((int) $row['forms_sections_id'])) {
+                return [$section, (int) $row['vertical_rank']];
+            }
+        }
+
+        // 2. Busca seção pelo nome — insere ao fim dela
+        $res = $DB->doQuery(
+            "SELECT id FROM `$sectionTable`
+             WHERE forms_forms_id = $formId
+               AND name = '$escaped'
+             ORDER BY rank ASC
+             LIMIT 1"
+        );
+
+        if ($res && $res->num_rows > 0) {
+            $row     = $res->fetch_assoc();
+            $section = new Section();
+            if ($section->getFromDB((int) $row['id'])) {
+                $rankRow = $DB->request([
+                    'SELECT' => ['vertical_rank'],
+                    'FROM'   => $questionTable,
+                    'WHERE'  => ['forms_sections_id' => (int) $row['id']],
+                    'ORDER'  => 'vertical_rank DESC',
+                    'LIMIT'  => 1,
+                ]);
+                $maxRank = $rankRow->count() > 0
+                    ? (int) $rankRow->current()['vertical_rank']
+                    : -1;
+                return [$section, $maxRank];
+            }
+        }
+
+        // 3. Não encontrado
+        return [null, -1];
+    }
 
     private function resolveFirstSection(Form $form): ?Section
     {

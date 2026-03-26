@@ -96,11 +96,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['fbm_submit'])) {
         exit;
     }
 
-    $position = ($_POST['position'] ?? 'last') === 'first' ? 'first' : 'last';
-    $force    = isset($_POST['force']) && $_POST['force'] === '1';
+    $position = $_POST['position'] ?? 'last';
+    if (!in_array($position, ['first', 'last', 'after'], true)) {
+        $position = 'last';
+    }
+    $afterName = trim(strip_tags($_POST['after_name'] ?? ''));
+    $force     = isset($_POST['force']) && $_POST['force'] === '1';
 
     // ── Executar o lote ───────────────────────────────────────────────────
-    $result = $manager->addQuestionToForms($questionsData, array_values($formIds), $position, $force);
+    $result = $manager->addQuestionToForms($questionsData, array_values($formIds), $position, $force, $afterName);
 
     if ($result['added'] > 0) {
         Session::addMessageAfterRedirect(
@@ -212,10 +216,11 @@ $regexSupportedTypes = json_encode(BatchManager::REGEX_SUPPORTED_TYPES);
                         <label class="form-label fw-semibold">
                             Posicao de insercao na secao
                         </label>
-                        <div class="d-flex gap-3">
+                        <div class="d-flex flex-wrap gap-3">
                             <div class="form-check">
                                 <input class="form-check-input" type="radio"
-                                       name="position" id="pos_last" value="last" checked>
+                                       name="position" id="pos_last" value="last" checked
+                                       onchange="fbmOnPositionChange()">
                                 <label class="form-check-label" for="pos_last">
                                     <i class="ti ti-arrow-bar-down me-1 text-muted"></i>
                                     Fim da secao
@@ -224,12 +229,33 @@ $regexSupportedTypes = json_encode(BatchManager::REGEX_SUPPORTED_TYPES);
                             </div>
                             <div class="form-check">
                                 <input class="form-check-input" type="radio"
-                                       name="position" id="pos_first" value="first">
+                                       name="position" id="pos_first" value="first"
+                                       onchange="fbmOnPositionChange()">
                                 <label class="form-check-label" for="pos_first">
                                     <i class="ti ti-arrow-bar-up me-1 text-muted"></i>
                                     Inicio da secao
                                     <small class="text-muted d-block">Empurra questoes existentes para baixo</small>
                                 </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio"
+                                       name="position" id="pos_after" value="after"
+                                       onchange="fbmOnPositionChange()">
+                                <label class="form-check-label" for="pos_after">
+                                    <i class="ti ti-arrow-down-circle me-1 text-muted"></i>
+                                    Apos pergunta ou secao especifica
+                                    <small class="text-muted d-block">Insere imediatamente abaixo do item indicado</small>
+                                </label>
+                            </div>
+                        </div>
+                        <div id="fbm-after-name-wrapper" class="mt-2" style="display:none">
+                            <input type="text" name="after_name" id="fbm-after-name"
+                                   class="form-control form-control-sm"
+                                   placeholder="Nome exato da pergunta ou secao de referencia"
+                                   maxlength="255">
+                            <div class="form-text">
+                                <i class="ti ti-info-circle me-1"></i>
+                                Se nao encontrado no formulario, insere ao fim da secao.
                             </div>
                         </div>
                     </div>
@@ -556,6 +582,17 @@ var FBM_ACTOR_TYPES      = <?= json_encode(BatchManager::ACTOR_TYPES) ?>;
 var FBM_CHECK_URL        = <?= json_encode($checkUrl) ?>;
 
 var fbmRowIndex = 0;
+
+// ── Posição de inserção ───────────────────────────────────────────────
+
+function fbmOnPositionChange() {
+    var isAfter = document.getElementById('pos_after').checked;
+    var wrapper = document.getElementById('fbm-after-name-wrapper');
+    wrapper.style.display = isAfter ? '' : 'none';
+    if (isAfter) {
+        document.getElementById('fbm-after-name').focus();
+    }
+}
 
 // ── Adicionar/remover linhas ─────────────────────────────────────────
 
