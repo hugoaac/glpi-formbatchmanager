@@ -21,6 +21,11 @@ class PluginFormbatchmanagerMenu extends CommonGLPI
             'page'    => $base . '/front/batch.php',
             'icon'    => 'ti ti-copy',
             'options' => [
+                'actors' => [
+                    'title' => 'Definir Atores',
+                    'page'  => $base . '/front/actors.php',
+                    'icon'  => 'ti ti-users',
+                ],
                 'repair' => [
                     'title' => 'Reparar Formularios',
                     'page'  => $base . '/front/repair.php',

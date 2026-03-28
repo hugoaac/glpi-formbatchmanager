@@ -689,6 +689,182 @@ class BatchManager
         return ['updated' => $updated, 'errors' => $errors];
     }
 
+    // ── Atores nas Destinações de Chamado ────────────────────────────────────
+
+    private const DEST_TABLE           = 'glpi_forms_destinations_formdestinations';
+    private const DEST_REQUESTER_KEY   = 'glpi-form-destination-commonitilfield-requesterfield';
+    private const DEST_OBSERVER_KEY    = 'glpi-form-destination-commonitilfield-observerfield';
+    private const DEST_STRATEGY_ANSWER = 'specific_answer';
+
+    /**
+     * Busca o ID de uma questão pelo nome (exato) em qualquer seção do formulário.
+     */
+    private function findQuestionIdByName(int $formId, string $questionName): ?int
+    {
+        global $DB;
+
+        $questionTable = Question::getTable();
+        $sectionTable  = Section::getTable();
+        $escaped       = $DB->escape($questionName);
+
+        $res = $DB->doQuery(
+            "SELECT q.id
+             FROM `$questionTable` q
+             JOIN `$sectionTable` s ON s.id = q.forms_sections_id
+             WHERE s.forms_forms_id = $formId
+               AND q.name = '$escaped'
+             LIMIT 1"
+        );
+
+        if ($res && $res->num_rows > 0) {
+            return (int) $res->fetch_assoc()['id'];
+        }
+
+        return null;
+    }
+
+    /**
+     * Verifica quais formulários estão prontos para receber a configuração de atores.
+     *
+     * @param array $config
+     *   - requester_question (string) Nome da questão para Requerente (vazio = não configurar)
+     *   - observer_question  (string) Nome da questão para Observador (vazio = não configurar)
+     * @param int[] $formIds
+     * @return array{
+     *   ok: list<array{form_id:int,form_name:string}>,
+     *   no_destination: list<array{form_id:int,form_name:string}>,
+     *   missing_requester: list<array{form_id:int,form_name:string}>,
+     *   missing_observer: list<array{form_id:int,form_name:string}>,
+     * }
+     */
+    public function checkActorConfiguration(array $config, array $formIds): array
+    {
+        global $DB;
+
+        $requesterQ = trim($config['requester_question'] ?? '');
+        $observerQ  = trim($config['observer_question'] ?? '');
+
+        $result = [
+            'ok'                => [],
+            'no_destination'    => [],
+            'missing_requester' => [],
+            'missing_observer'  => [],
+        ];
+
+        foreach ($formIds as $rawId) {
+            $formId = (int) $rawId;
+
+            $form = new Form();
+            if (!$form->getFromDB($formId)) {
+                continue;
+            }
+            $formName = $form->fields['name'];
+
+            // Verificar se tem destinação de chamado
+            $destRes = $DB->doQuery(
+                "SELECT id FROM `" . self::DEST_TABLE . "`
+                 WHERE forms_forms_id = $formId
+                 LIMIT 1"
+            );
+
+            if (!$destRes || $destRes->num_rows === 0) {
+                $result['no_destination'][] = ['form_id' => $formId, 'form_name' => $formName];
+                continue;
+            }
+
+            $problems = [];
+
+            if ($requesterQ !== '' && $this->findQuestionIdByName($formId, $requesterQ) === null) {
+                $result['missing_requester'][] = ['form_id' => $formId, 'form_name' => $formName];
+                $problems[] = 'requester';
+            }
+
+            if ($observerQ !== '' && $this->findQuestionIdByName($formId, $observerQ) === null) {
+                $result['missing_observer'][] = ['form_id' => $formId, 'form_name' => $formName];
+                $problems[] = 'observer';
+            }
+
+            if (empty($problems)) {
+                $result['ok'][] = ['form_id' => $formId, 'form_name' => $formName];
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Define atores (Requerente / Observador) a partir de questões em todas as
+     * destinações de chamado dos formulários informados.
+     *
+     * @param array $config
+     *   - requester_question (string)
+     *   - observer_question  (string)
+     * @param int[] $formIds  IDs já validados (sem problemas de questão/destino)
+     * @return array{updated:int, errors:string[]}
+     */
+    public function setActorsFromQuestions(array $config, array $formIds): array
+    {
+        global $DB;
+
+        $requesterQ = trim($config['requester_question'] ?? '');
+        $observerQ  = trim($config['observer_question'] ?? '');
+
+        $result = ['updated' => 0, 'errors' => []];
+
+        foreach ($formIds as $rawId) {
+            $formId = (int) $rawId;
+
+            $destRes = $DB->doQuery(
+                "SELECT id, config FROM `" . self::DEST_TABLE . "`
+                 WHERE forms_forms_id = $formId"
+            );
+
+            if (!$destRes || $destRes->num_rows === 0) {
+                $result['errors'][] = "Formulário #$formId: sem destinação de chamado.";
+                continue;
+            }
+
+            $requesterQId = $requesterQ !== '' ? $this->findQuestionIdByName($formId, $requesterQ) : null;
+            $observerQId  = $observerQ  !== '' ? $this->findQuestionIdByName($formId, $observerQ)  : null;
+
+            while ($dest = $destRes->fetch_assoc()) {
+                $destId = (int) $dest['id'];
+                $cfg    = json_decode($dest['config'] ?? '{}', true) ?: [];
+
+                if ($requesterQId !== null) {
+                    $cfg[self::DEST_REQUESTER_KEY] = [
+                        'strategies'              => [self::DEST_STRATEGY_ANSWER],
+                        'specific_itilactors_ids' => [],
+                        'specific_question_ids'   => [$requesterQId],
+                    ];
+                }
+
+                if ($observerQId !== null) {
+                    $cfg[self::DEST_OBSERVER_KEY] = [
+                        'strategies'              => [self::DEST_STRATEGY_ANSWER],
+                        'specific_itilactors_ids' => [],
+                        'specific_question_ids'   => [$observerQId],
+                    ];
+                }
+
+                $escaped = $DB->escape(json_encode($cfg));
+                $ok      = $DB->doQuery(
+                    "UPDATE `" . self::DEST_TABLE . "`
+                     SET `config` = '$escaped'
+                     WHERE `id` = $destId"
+                );
+
+                if ($ok) {
+                    $result['updated']++;
+                } else {
+                    $result['errors'][] = "Destino #$destId (formulário #$formId): falha ao atualizar.";
+                }
+            }
+        }
+
+        return $result;
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────
 
     /**

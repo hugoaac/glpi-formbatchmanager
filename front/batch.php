@@ -178,6 +178,9 @@ $regexSupportedTypes = json_encode(BatchManager::REGEX_SUPPORTED_TYPES);
             <a href="edit.php" class="btn btn-sm btn-outline-primary">
                 <i class="ti ti-edit me-1"></i>Editar em lote
             </a>
+            <a href="actors.php" class="btn btn-sm btn-outline-success">
+                <i class="ti ti-users me-1"></i>Definir atores
+            </a>
             <a href="repair.php" class="btn btn-sm btn-outline-warning">
                 <i class="ti ti-tool me-1"></i>Reparar corrompidos
             </a>
